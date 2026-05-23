@@ -38,7 +38,7 @@ def fetch_adzuna_jobs():
         "app_key": ADZUNA_KEY,
         "results_per_page": 20,
         "what": "bioinformatics genomics computational biology",
-        "where": "london",
+        "where": "EUROPE",
         "content-type": "application/json",
     }
 
