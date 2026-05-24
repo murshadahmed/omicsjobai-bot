@@ -1,103 +1,137 @@
 import os
-import time
 import requests
-from dotenv import load_dotenv
-# from openai import OpenAI  # COMMENT KAR DIYA
+import time
+import json
+from datetime import datetime
 
-load_dotenv()
+# --- Configuration ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
+ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # YE RAILWAY ME ADD KARNA PADEGA
+# File to track posted jobs to prevent duplicates
+POSTED_JOBS_FILE = "posted_jobs.txt"
 
-ADZUNA_ID = os.getenv("ADZUNA_APP_ID")
-ADZUNA_KEY = os.getenv("ADZUNA_APP_KEY")
+# --- Search Parameters ---
+COUNTRIES = ["gb", "us", "de", "ca", "au", "in", "sg", "nl"]  # UK, USA, Germany, Canada, Australia, India, Singapore, Netherlands
+KEYWORDS = "bioinformatics OR computational biology OR genomics OR proteomics OR transcriptomics OR bioinformatician OR postdoc bioinformatics OR research assistant bioinformatics OR staff scientist OR senior scientist bioinformatics OR omics OR NGS OR single cell"
 
-# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # COMMENT
+# Blacklist to filter out wet-lab jobs
+BLACKLIST = ["wet lab", "experimental", "bench", "pipette", "molecular biology", "cell culture"]
 
-SENT_JOBS_FILE = "sent_jobs.txt"
-
-def get_sent_jobs():
+def load_posted_jobs():
+    """Load previously posted job IDs from file."""
     try:
-        with open(SENT_JOBS_FILE, "r") as f:
-            return set(f.read().splitlines())
+        with open(POSTED_JOBS_FILE, "r") as f:
+            return set(line.strip() for line in f)
     except FileNotFoundError:
         return set()
 
-def save_sent_job(job_id):
-    with open(SENT_JOBS_FILE, "a") as f:
+def save_posted_job(job_id):
+    """Save a job ID to the posted jobs file."""
+    with open(POSTED_JOBS_FILE, "a") as f:
         f.write(f"{job_id}\n")
 
-def fetch_adzuna_jobs():
-    url = "https://api.adzuna.com/v1/api/jobs/gb/search/1"
-    params = {
-        "app_id": ADZUNA_ID,
-        "app_key": ADZUNA_KEY,
-        "results_per_page": 20,
-        "what": "bioinformatics genomics computational biology",
-        "where": "EUROPE",
-        "content-type": "application/json",
+def is_relevant(job):
+    """Check if job is relevant to computational work using blacklist."""
+    text = (job.get('title', '') + ' ' + job.get('description', '')).lower()
+    if any(word in text for word in BLACKLIST):
+        return False
+    return True
+
+def send_to_telegram(message):
+    """Send formatted message to Telegram channel."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
     }
-    r = requests.get(url, params=params)
-    r.raise_for_status()
-    return r.json().get("results", [])
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("Message sent to Telegram successfully.")
+        else:
+            print(f"Failed to send to Telegram: {response.status_code} {response.text}")
+    except Exception as e:
+        print(f"Error sending to Telegram: {e}")
 
-def summarize_job(title, desc, company, location):
-    # OpenAI bypass - direct return
-    return f"🧬 {title} at {company}, {location}"
-
-def send_telegram_message(msg):
-    if not CHAT_ID:
-        print("TELEGRAM_CHAT_ID missing. Skipping send.")
-        return
+def fetch_jobs():
+    """Fetch jobs from Adzuna across all specified countries."""
+    all_jobs = []
+    posted_jobs = load_posted_jobs()
+    
+    for country in COUNTRIES:
+        print(f"Checking {country.upper()}...")
+        url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
+        params = {
+            "app_id": ADZUNA_APP_ID,
+            "app_key": ADZUNA_APP_KEY,
+            "results_per_page": 10,
+            "what": KEYWORDS,
+            "sort_by": "date",
+            "max_days_old": 1
+        }
+        try:
+            response = requests.get(url, params=params, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                for job in results:
+                    job_id = str(job.get("id"))
+                    if job_id not in posted_jobs and is_relevant(job):
+                        all_jobs.append(job)
+                        posted_jobs.add(job_id)  # Mark as seen for this run
+            else:
+                print(f"Adzuna API error for {country}: {response.status_code}")
+        except Exception as e:
+            print(f"Error fetching from {country}: {e}")
         
-    telegram_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    response = requests.post(
-        telegram_url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": msg,
-            "disable_web_page_preview": True,
-        },
-    )
-    response.raise_for_status()
-
-def send_job(job):
-    job_id = str(job["id"])
-    title = job.get("title", "No title")
-    company = job.get("company", {}).get("display_name", "Unknown company")
-    location = job.get("location", {}).get("display_name", "Unknown location")
-    url = job.get("redirect_url", "")
-    desc = job.get("description", "")
+        time.sleep(1)  # Rate limit: 1 second between country requests
     
-    summary = summarize_job(title, desc, company, location)
-    
-    msg = f"""{summary}
+    return all_jobs
 
-📍 {location}
-🏢 {company}
-🔗 Apply: {url}
-
-#Bioinformatics #Genomics #Jobs
-"""
+def format_job_message(job):
+    """Format job data into Telegram message."""
+    title = job.get('title', 'N/A')
+    company = job.get('company', {}).get('display_name', 'N/A')
+    location = job.get('location', {}).get('display_name', 'N/A')
+    link = job.get('redirect_url', '#')
+    salary = job.get('salary_min')
+    salary_text = f"*Salary:* ${int(salary):,}/year\n" if salary else ""
     
-    send_telegram_message(msg)
-    save_sent_job(job_id)
-    print(f"Sent: {title}")
+    message = f"""🔬 *New Bioinformatics Job*
+
+*Title:* {title}
+*Company:* {company}
+*Location:* {location}
+{salary_text}*Link:* {link}"""
+    return message
 
 def main():
+    """Main execution loop."""
     print("Starting OmicsJobAI MVP...")
-    sent_jobs = get_sent_jobs()
-    jobs = fetch_adzuna_jobs()
-    new_jobs = [j for j in jobs if str(j["id"]) not in sent_jobs]
-    print(f"Found {len(new_jobs)} new jobs.")
     
-    for job in new_jobs[:5]:
-        send_job(job)
-        time.sleep(2)
-    
-    print("Sleeping for 3600 seconds.")
+    while True:
+        try:
+            new_jobs = fetch_jobs()
+            print(f"Found {len(new_jobs)} new relevant jobs.")
+            
+            for job in new_jobs:
+                message = format_job_message(job)
+                send_to_telegram(message)
+                save_posted_job(str(job.get("id")))
+                time.sleep(2)  # Avoid Telegram rate limits
+            
+            print("Sleeping for 3600 seconds.")
+            time.sleep(3600)  # 1 hour
+            
+        except Exception as e:
+            print(f"Critical error in main loop: {e}")
+            print("Sleeping for 300 seconds before retry.")
+            time.sleep(300)  # Wait 5 min on error
 
 if __name__ == "__main__":
-    while True:
-        main()
-        time.sleep(3600)
+    main()
