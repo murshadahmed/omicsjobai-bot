@@ -2,26 +2,108 @@ import os
 import requests
 import time
 import json
+import feedparser
 from datetime import datetime
 
-# --- Configuration ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
-ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
+# ─────────────────────────────────────────────
+# OmicsJobAI Bot — BioInfoConnects (BIC)
+# Legal sources only:
+#   - Adzuna API (licensed job aggregator)
+#   - ISCB Jobs RSS (public feed, free to read)
+#   - Nature Careers RSS (public feed)
+#   - New Scientist Jobs RSS (public feed)
+# We do NOT scrape LinkedIn, Indeed, Glassdoor
+# directly — this would violate their ToS.
+# Adzuna legally syndicates from those platforms.
+# ─────────────────────────────────────────────
 
-# File to track posted jobs to prevent duplicates
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
+ADZUNA_APP_ID      = os.getenv("ADZUNA_APP_ID")
+ADZUNA_APP_KEY     = os.getenv("ADZUNA_APP_KEY")
+
 POSTED_JOBS_FILE = "posted_jobs.txt"
 
-# --- Search Parameters ---
-COUNTRIES = ["gb", "us", "de", "ca", "au", "in", "sg", "nl"]  # UK, USA, Germany, Canada, Australia, India, Singapore, Netherlands
-KEYWORDS = "bioinformatics OR computational biology OR genomics OR proteomics OR transcriptomics OR bioinformatician OR postdoc bioinformatics OR research assistant bioinformatics OR staff scientist OR senior scientist bioinformatics OR omics OR NGS OR single cell"
+# ── EXPANDED COUNTRIES ────────────────────────
+# Organised by region for clarity
+COUNTRIES = [
+    # North America
+    "us", "ca",
+    # Europe
+    "gb", "de", "fr", "nl", "at", "be", "ch", "pl", "se", "no", "dk", "fi",
+    # Asia Pacific
+    "au", "nz", "sg", "in", "jp",
+    # Middle East / Africa (Adzuna supported)
+    "za",
+    # South America
+    "br",
+]
 
-# Blacklist to filter out wet-lab jobs
-BLACKLIST = ["wet lab", "experimental", "bench", "pipette", "molecular biology", "cell culture"]
+# Note: China, Taiwan, UAE, South Korea are not
+# in Adzuna's supported country list. Jobs from
+# those regions appear under global/sg/in results.
+
+# ── EXPANDED KEYWORDS ────────────────────────
+# Adzuna supports OR logic in the "what" field
+KEYWORDS = (
+    "bioinformatics OR computational biology OR genomics OR proteomics OR "
+    "transcriptomics OR metagenomics OR bioinformatician OR omics OR "
+    "single cell OR scRNA-seq OR RNA-seq OR NGS OR next generation sequencing OR "
+    "epigenomics OR structural bioinformatics OR systems biology OR "
+    "computational genomics OR genome assembly OR variant calling OR GWAS OR "
+    "phylogenomics OR metabolomics OR spatial transcriptomics OR "
+    "multi-omics OR pangenomics OR long read sequencing OR nanopore OR "
+    "computational chemistry OR molecular docking OR MD simulation OR "
+    "molecular dynamics OR drug discovery computational OR "
+    "cheminformatics OR QSAR OR virtual screening OR "
+    "machine learning biology OR deep learning genomics OR "
+    "AI drug discovery OR artificial intelligence bioinformatics OR "
+    "computational neuroscience OR genetics computational OR "
+    "postdoc bioinformatics OR staff scientist bioinformatics OR "
+    "research scientist computational OR senior scientist bioinformatics OR "
+    "bioinformatics engineer OR data scientist genomics OR "
+    "principal investigator bioinformatics OR research associate computational"
+)
+
+# ── BLACKLIST (wet-lab / non-computational) ──
+BLACKLIST = [
+    "wet lab", "bench scientist", "pipette", "cell culture",
+    "histology", "animal model", "mouse model", "rat model",
+    "phlebotomist", "clinical nurse", "surgery", "radiologist",
+    "dentist", "pharmacy technician"
+]
+
+# ── PUBLIC RSS JOB FEEDS (legal to read) ─────
+RSS_FEEDS = [
+    {
+        "name": "ISCB Jobs",
+        "url": "https://www.iscb.org/jobs-feed",
+        "source": "ISCB"
+    },
+    {
+        "name": "Nature Careers",
+        "url": "https://www.nature.com/naturecareers/rss/jobs",
+        "source": "Nature Careers"
+    },
+    {
+        "name": "New Scientist Jobs",
+        "url": "https://jobs.newscientist.com/rss/vacancies/keyword/bioinformatics",
+        "source": "New Scientist Jobs"
+    },
+]
+
+# ── KEYWORDS FOR RSS FILTER ──────────────────
+RSS_KEYWORDS = [
+    "bioinformatics", "computational biology", "genomics", "proteomics",
+    "transcriptomics", "metagenomics", "single-cell", "RNA-seq", "NGS",
+    "machine learning", "deep learning", "AI", "drug discovery",
+    "molecular docking", "MD simulation", "molecular dynamics",
+    "cheminformatics", "structural biology", "systems biology",
+    "epigenomics", "multi-omics", "computational", "omics",
+    "genetics", "variant calling", "GWAS", "nanopore",
+]
 
 def load_posted_jobs():
-    """Load previously posted job IDs from file."""
     try:
         with open(POSTED_JOBS_FILE, "r") as f:
             return set(line.strip() for line in f)
@@ -29,19 +111,16 @@ def load_posted_jobs():
         return set()
 
 def save_posted_job(job_id):
-    """Save a job ID to the posted jobs file."""
     with open(POSTED_JOBS_FILE, "a") as f:
         f.write(f"{job_id}\n")
 
-def is_relevant(job):
-    """Check if job is relevant to computational work using blacklist."""
-    text = (job.get('title', '') + ' ' + job.get('description', '')).lower()
+def is_relevant(title, description=""):
+    text = (title + " " + description).lower()
     if any(word in text for word in BLACKLIST):
         return False
     return True
 
 def send_to_telegram(message):
-    """Send formatted message to Telegram channel."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -52,86 +131,137 @@ def send_to_telegram(message):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("Message sent to Telegram successfully.")
+            print("✅ Telegram message sent.")
         else:
-            print(f"Failed to send to Telegram: {response.status_code} {response.text}")
+            print(f"❌ Telegram error: {response.status_code} {response.text}")
     except Exception as e:
-        print(f"Error sending to Telegram: {e}")
+        print(f"❌ Telegram exception: {e}")
 
-def fetch_jobs():
-    """Fetch jobs from Adzuna across all specified countries."""
-    all_jobs = []
-    posted_jobs = load_posted_jobs()
-    
+def format_adzuna_message(job, country):
+    title    = job.get('title', 'N/A')
+    company  = job.get('company', {}).get('display_name', 'N/A')
+    location = job.get('location', {}).get('display_name', 'N/A')
+    link     = job.get('redirect_url', '#')
+    salary   = job.get('salary_min')
+    salary_text = f"💰 *Salary:* ${int(salary):,}/year\n" if salary else ""
+    country_upper = country.upper()
+
+    return (
+        f"🔬 *New Bioinformatics Job — {country_upper}*\n\n"
+        f"📌 *{title}*\n"
+        f"🏢 *Company:* {company}\n"
+        f"📍 *Location:* {location}\n"
+        f"{salary_text}"
+        f"🔗 *Apply:* {link}\n\n"
+        f"_Via Adzuna · BioInfoConnects_\n"
+        f"#Bioinformatics #BIC #OmicsJobs #{country_upper}Jobs"
+    )
+
+def format_rss_message(entry, source_name):
+    title    = entry.get('title', 'N/A').strip()
+    link     = entry.get('link', '#').strip()
+    summary  = entry.get('summary', '')[:200].strip()
+    summary_text = f"📝 _{summary}..._\n" if summary else ""
+
+    return (
+        f"💼 *New Job — {source_name}*\n\n"
+        f"📌 *{title}*\n"
+        f"{summary_text}"
+        f"🔗 *Apply:* {link}\n\n"
+        f"_Via {source_name} · BioInfoConnects_\n"
+        f"#Bioinformatics #BIC #OmicsJobs"
+    )
+
+def fetch_adzuna_jobs(posted_jobs):
+    new_jobs = []
     for country in COUNTRIES:
-        print(f"Checking {country.upper()}...")
+        print(f"  Checking Adzuna — {country.upper()}...")
         url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
         params = {
-            "app_id": ADZUNA_APP_ID,
-            "app_key": ADZUNA_APP_KEY,
+            "app_id":          ADZUNA_APP_ID,
+            "app_key":         ADZUNA_APP_KEY,
             "results_per_page": 10,
-            "what": KEYWORDS,
-            "sort_by": "date",
-            "max_days_old": 1
+            "what":            KEYWORDS,
+            "sort_by":         "date",
+            "max_days_old":    3,   # Changed from 1 to 3 — catches more jobs
         }
         try:
-            response = requests.get(url, params=params, timeout=15)
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get("results", [])
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                results = r.json().get("results", [])
                 for job in results:
-                    job_id = str(job.get("id"))
-                    if job_id not in posted_jobs and is_relevant(job):
-                        all_jobs.append(job)
-                        posted_jobs.add(job_id)  # Mark as seen for this run
+                    job_id = f"adzuna_{job.get('id')}"
+                    title  = job.get('title', '')
+                    desc   = job.get('description', '')
+                    if job_id not in posted_jobs and is_relevant(title, desc):
+                        new_jobs.append((job_id, format_adzuna_message(job, country)))
+                        posted_jobs.add(job_id)
             else:
-                print(f"Adzuna API error for {country}: {response.status_code}")
+                print(f"  ⚠️  Adzuna {country.upper()}: HTTP {r.status_code}")
         except Exception as e:
-            print(f"Error fetching from {country}: {e}")
-        
-        time.sleep(1)  # Rate limit: 1 second between country requests
-    
-    return all_jobs
+            print(f"  ⚠️  Adzuna {country.upper()} error: {e}")
+        time.sleep(1)
+    return new_jobs
 
-def format_job_message(job):
-    """Format job data into Telegram message."""
-    title = job.get('title', 'N/A')
-    company = job.get('company', {}).get('display_name', 'N/A')
-    location = job.get('location', {}).get('display_name', 'N/A')
-    link = job.get('redirect_url', '#')
-    salary = job.get('salary_min')
-    salary_text = f"*Salary:* ${int(salary):,}/year\n" if salary else ""
-    
-    message = f"""🔬 *New Bioinformatics Job*
+def fetch_rss_jobs(posted_jobs):
+    new_jobs = []
+    for feed in RSS_FEEDS:
+        print(f"  Checking RSS — {feed['name']}...")
+        try:
+            parsed = feedparser.parse(feed['url'])
+            for entry in parsed.entries:
+                title   = entry.get('title', '')
+                link    = entry.get('link', '')
+                summary = entry.get('summary', '')
+                job_id  = f"rss_{feed['source']}_{link}"
 
-*Title:* {title}
-*Company:* {company}
-*Location:* {location}
-{salary_text}*Link:* {link}"""
-    return message
+                # Check keyword relevance
+                text = (title + " " + summary).lower()
+                if not any(kw.lower() in text for kw in RSS_KEYWORDS):
+                    continue
+
+                if job_id not in posted_jobs and is_relevant(title, summary):
+                    new_jobs.append((job_id, format_rss_message(entry, feed['name'])))
+                    posted_jobs.add(job_id)
+        except Exception as e:
+            print(f"  ⚠️  RSS {feed['name']} error: {e}")
+        time.sleep(1)
+    return new_jobs
 
 def main():
-    """Main execution loop."""
-    print("Starting OmicsJobAI MVP...")
-    
+    print("=" * 55)
+    print("  OmicsJobAI Bot — BioInfoConnects (BIC)")
+    print("  Legal sources: Adzuna API + Public RSS feeds")
+    print("=" * 55)
+
     while True:
         try:
-            new_jobs = fetch_jobs()
-            print(f"Found {len(new_jobs)} new relevant jobs.")
-            
-            for job in new_jobs:
-                message = format_job_message(job)
+            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting job search...")
+            posted_jobs = load_posted_jobs()
+
+            # Fetch from Adzuna (licensed aggregator)
+            adzuna_jobs = fetch_adzuna_jobs(posted_jobs)
+            print(f"  Adzuna: {len(adzuna_jobs)} new jobs found")
+
+            # Fetch from public RSS feeds
+            rss_jobs = fetch_rss_jobs(posted_jobs)
+            print(f"  RSS feeds: {len(rss_jobs)} new jobs found")
+
+            all_new_jobs = adzuna_jobs + rss_jobs
+            print(f"  Total new jobs this cycle: {len(all_new_jobs)}")
+
+            for job_id, message in all_new_jobs:
                 send_to_telegram(message)
-                save_posted_job(str(job.get("id")))
-                time.sleep(2)  # Avoid Telegram rate limits
-            
-            print("Sleeping for 3600 seconds.")
-            time.sleep(3600)  # 1 hour
-            
+                save_posted_job(job_id)
+                time.sleep(2)
+
+            print(f"  Done. Sleeping 3600 seconds (1 hour)...")
+            time.sleep(3600)
+
         except Exception as e:
-            print(f"Critical error in main loop: {e}")
-            print("Sleeping for 300 seconds before retry.")
-            time.sleep(300)  # Wait 5 min on error
+            print(f"❌ Critical error: {e}")
+            print("  Sleeping 300 seconds before retry...")
+            time.sleep(300)
 
 if __name__ == "__main__":
     main()
