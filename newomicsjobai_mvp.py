@@ -26,17 +26,17 @@ POSTED_JOBS_FILE = "posted_jobs.txt"
 
 # ── EXPANDED COUNTRIES ────────────────────────
 # Organised by region for clarity
+# Adzuna officially supported countries only
+# HTTP 404 = country not in Adzuna database
+# UAE, China, Taiwan, South Korea, Singapore jobs
+# appear via IN (India) and GB (global) results
 COUNTRIES = [
     # North America
     "us", "ca",
-    # Europe
-    "gb", "de", "fr", "nl", "at", "be", "ch", "pl", "se", "no", "dk", "fi",
-    # Asia Pacific
-    "au", "nz", "sg", "in", "jp",
-    # Middle East / Africa (Adzuna supported)
-    "za",
-    # South America
-    "br",
+    # Europe (Adzuna verified)
+    "gb", "de", "fr", "nl", "at", "be", "ch", "pl",
+    # Asia Pacific (Adzuna verified)
+    "au", "sg", "in",
 ]
 
 # Note: China, Taiwan, UAE, South Korea are not
@@ -74,21 +74,28 @@ BLACKLIST = [
 ]
 
 # ── PUBLIC RSS JOB FEEDS (legal to read) ─────
+# Public RSS feeds — verified working URLs
+# These are free public feeds, legal to read
 RSS_FEEDS = [
     {
-        "name": "ISCB Jobs",
-        "url": "https://www.iscb.org/jobs-feed",
-        "source": "ISCB"
-    },
-    {
-        "name": "Nature Careers",
-        "url": "https://www.nature.com/naturecareers/rss/jobs",
+        "name": "Nature Careers — Bioinformatics",
+        "url": "https://www.nature.com/naturecareers/rss/bioinformatics",
         "source": "Nature Careers"
     },
     {
-        "name": "New Scientist Jobs",
-        "url": "https://jobs.newscientist.com/rss/vacancies/keyword/bioinformatics",
-        "source": "New Scientist Jobs"
+        "name": "EBI Jobs",
+        "url": "https://www.ebi.ac.uk/about/jobs/rss",
+        "source": "EMBL-EBI"
+    },
+    {
+        "name": "EMBL Jobs",
+        "url": "https://www.embl.org/jobs/feed/",
+        "source": "EMBL"
+    },
+    {
+        "name": "bioRxiv — Bioinformatics",
+        "url": "https://connect.biorxiv.org/biorxiv_xml.php?subject=bioinformatics",
+        "source": "bioRxiv"
     },
 ]
 
@@ -180,10 +187,10 @@ def fetch_adzuna_jobs(posted_jobs):
         params = {
             "app_id":          ADZUNA_APP_ID,
             "app_key":         ADZUNA_APP_KEY,
-            "results_per_page": 10,
+            "results_per_page": 50,
             "what":            KEYWORDS,
             "sort_by":         "date",
-            "max_days_old":    3,   # Changed from 1 to 3 — catches more jobs
+            "max_days_old":    7,   # Search last 7 days — catches maximum jobs
         }
         try:
             r = requests.get(url, params=params, timeout=15)
