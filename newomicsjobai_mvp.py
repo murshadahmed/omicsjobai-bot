@@ -1,273 +1,440 @@
 import os
 import requests
 import time
-import json
 import feedparser
 from datetime import datetime
 
-# ─────────────────────────────────────────────
-# OmicsJobAI Bot — BioInfoConnects (BIC)
-# Legal sources only:
-#   - Adzuna API (licensed job aggregator)
-#   - ISCB Jobs RSS (public feed, free to read)
-#   - Nature Careers RSS (public feed)
-#   - New Scientist Jobs RSS (public feed)
-# We do NOT scrape LinkedIn, Indeed, Glassdoor
-# directly — this would violate their ToS.
-# Adzuna legally syndicates from those platforms.
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════
+#  OmicsJobAI Bot — BioInfoConnects (BIC)
+#  
+#  TWO SEPARATE SYSTEMS:
+#  1. TELEGRAM  → Jobs ONLY (hiring positions)
+#  2. WEBSITE   → Everything (jobs + papers + tools +
+#                 methods + conferences + PhD positions)
+#
+#  Legal sources only — no scraping of LinkedIn/Indeed
+# ═══════════════════════════════════════════════════════
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 ADZUNA_APP_ID      = os.getenv("ADZUNA_APP_ID")
 ADZUNA_APP_KEY     = os.getenv("ADZUNA_APP_KEY")
+# Get these from your Supabase project Settings → API Keys
+# Add them as Railway environment variables — NEVER hardcode here
+SUPABASE_URL = os.getenv("SUPABASE_URL")   # e.g. https://xxxxx.supabase.co
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")   # your anon/public key from Supabase
 
-POSTED_JOBS_FILE = "posted_jobs.txt"
+POSTED_JOBS_FILE    = "posted_jobs.txt"
+POSTED_CONTENT_FILE = "posted_content.txt"
 
-# ── EXPANDED COUNTRIES ────────────────────────
-# Organised by region for clarity
-# Adzuna officially supported countries only
-# HTTP 404 = country not in Adzuna database
-# UAE, China, Taiwan, South Korea, Singapore jobs
-# appear via IN (India) and GB (global) results
+# ── ADZUNA SUPPORTED COUNTRIES ───────────────────────
 COUNTRIES = [
-    # North America
-    "us", "ca",
-    # Europe (Adzuna verified)
-    "gb", "de", "fr", "nl", "at", "be", "ch", "pl",
-    # Asia Pacific (Adzuna verified)
-    "au", "sg", "in",
+    "us", "ca",                          # North America
+    "gb", "de", "fr", "nl", "at",        # Europe
+    "be", "ch", "pl",                    # Europe cont.
+    "au", "sg", "in",                    # Asia Pacific
 ]
 
-# Note: China, Taiwan, UAE, South Korea are not
-# in Adzuna's supported country list. Jobs from
-# those regions appear under global/sg/in results.
-
-# ── EXPANDED KEYWORDS ────────────────────────
-# Adzuna supports OR logic in the "what" field
-KEYWORDS = (
-    "bioinformatics OR computational biology OR genomics OR proteomics OR "
-    "transcriptomics OR metagenomics OR bioinformatician OR omics OR "
-    "single cell OR scRNA-seq OR RNA-seq OR NGS OR next generation sequencing OR "
-    "epigenomics OR structural bioinformatics OR systems biology OR "
-    "computational genomics OR genome assembly OR variant calling OR GWAS OR "
-    "phylogenomics OR metabolomics OR spatial transcriptomics OR "
-    "multi-omics OR pangenomics OR long read sequencing OR nanopore OR "
-    "computational chemistry OR molecular docking OR MD simulation OR "
-    "molecular dynamics OR drug discovery computational OR "
-    "cheminformatics OR QSAR OR virtual screening OR "
-    "machine learning biology OR deep learning genomics OR "
-    "AI drug discovery OR artificial intelligence bioinformatics OR "
-    "computational neuroscience OR genetics computational OR "
-    "postdoc bioinformatics OR staff scientist bioinformatics OR "
-    "research scientist computational OR senior scientist bioinformatics OR "
-    "bioinformatics engineer OR data scientist genomics OR "
-    "principal investigator bioinformatics OR research associate computational"
+# ── JOB SEARCH KEYWORDS (Adzuna) ─────────────────────
+JOB_KEYWORDS = (
+    "bioinformatics OR computational biology OR genomics OR "
+    "proteomics OR transcriptomics OR metagenomics OR "
+    "bioinformatician OR single cell OR scRNA-seq OR RNA-seq OR "
+    "NGS OR epigenomics OR structural bioinformatics OR "
+    "systems biology OR variant calling OR GWAS OR "
+    "molecular docking OR MD simulation OR drug discovery OR "
+    "cheminformatics OR machine learning biology OR "
+    "deep learning genomics OR AI bioinformatics OR "
+    "computational neuroscience OR multi-omics OR nanopore OR "
+    "spatial transcriptomics OR postdoc bioinformatics OR "
+    "staff scientist bioinformatics OR bioinformatics engineer"
 )
 
-# ── BLACKLIST (wet-lab / non-computational) ──
+# ── WORDS THAT CONFIRM A REAL JOB ────────────────────
+JOB_TITLE_WORDS = [
+    "scientist", "engineer", "postdoc", "post-doc", "post doc",
+    "researcher", "analyst", "developer", "bioinformatician",
+    "position", "vacancy", "fellow", "staff", "associate",
+    "manager", "director", "technician", "specialist",
+    "faculty", "professor", "lecturer", "doctoral", "phd position",
+    "phd student", "internship", "hiring", "opportunity", "role"
+]
+
+# ── PAPER SIGNALS (skip these in job feeds) ──────────
+PAPER_SIGNALS = [
+    "doi:", "biorxiv", "arxiv", "preprint", "abstract:",
+    "we report", "we present", "we show", "our study",
+    "figure 1", "supplementary", "et al", "results show"
+]
+
+# ── BLACKLIST (wet-lab / non-computational) ──────────
 BLACKLIST = [
     "wet lab", "bench scientist", "pipette", "cell culture",
-    "histology", "animal model", "mouse model", "rat model",
-    "phlebotomist", "clinical nurse", "surgery", "radiologist",
-    "dentist", "pharmacy technician"
+    "histology", "animal model", "phlebotomist", "clinical nurse",
+    "surgery", "radiologist", "dentist", "pharmacy technician"
 ]
 
-# ── PUBLIC RSS JOB FEEDS (legal to read) ─────
-# Public RSS feeds — verified working URLs
-# These are free public feeds, legal to read
-RSS_FEEDS = [
-    {
-        "name": "Nature Careers — Bioinformatics",
-        "url": "https://www.nature.com/naturecareers/rss/bioinformatics",
-        "source": "Nature Careers"
-    },
-    {
-        "name": "EBI Jobs",
-        "url": "https://www.ebi.ac.uk/about/jobs/rss",
-        "source": "EMBL-EBI"
-    },
-    {
-        "name": "EMBL Jobs",
-        "url": "https://www.embl.org/jobs/feed/",
-        "source": "EMBL"
-    },
-    {
-        "name": "bioRxiv — Bioinformatics",
-        "url": "https://connect.biorxiv.org/biorxiv_xml.php?subject=bioinformatics",
-        "source": "bioRxiv"
-    },
+# ═══════════════════════════════════════════════════════
+#  FEED 1 — JOBS ONLY → Telegram + Supabase job_posts
+# ═══════════════════════════════════════════════════════
+# ── JOB RSS FEEDS ────────────────────────────────────
+# All public feeds — legal to read
+# Covers: USA, UK, Europe, Gulf, Asia, Universities
+JOB_RSS_FEEDS = [
+
+    # ── INTERNATIONAL JOURNALS & SOCIETIES ──
+    # (posts jobs from USA, UK, Europe, Gulf, Asia)
+    {"name": "Nature Careers",
+     "url":  "https://www.nature.com/naturecareers/rss/bioinformatics",
+     "source": "Nature Careers"},
+
+    {"name": "Science Careers (AAAS)",
+     "url":  "https://jobs.sciencecareers.org/rss/jobs/?k=bioinformatics",
+     "source": "Science Careers"},
+
+    # ── RESEARCH INSTITUTES ──
+    {"name": "EMBL-EBI Jobs",
+     "url":  "https://www.ebi.ac.uk/about/jobs/rss",
+     "source": "EMBL-EBI"},
+
+    {"name": "EMBL Jobs",
+     "url":  "https://www.embl.org/jobs/feed/",
+     "source": "EMBL"},
+
+    {"name": "Wellcome Sanger Institute",
+     "url":  "https://www.sanger.ac.uk/about/careers/vacancies/feed/",
+     "source": "Sanger Institute"},
+
+    {"name": "Broad Institute",
+     "url":  "https://boards.greenhouse.io/broadinstitute.rss",
+     "source": "Broad Institute"},
+
+    {"name": "Chan Zuckerberg Initiative",
+     "url":  "https://boards.greenhouse.io/chanzuckerberginitiative.rss",
+     "source": "CZI"},
+
+    {"name": "NIH USA Jobs",
+     "url":  "https://jobs.nih.gov/vacancies/rss/bioinformatics.xml",
+     "source": "NIH"},
+
+    # ── USA UNIVERSITIES (.edu) ──
+    # Major universities with public bioinformatics job feeds
+    {"name": "Harvard Medical School",
+     "url":  "https://sjobs.brassring.com/TGnewUI/Search/home/HomeWithPreLoad?PageType=JobDetails&partnerid=25240&siteid=5341&jobId=0&type=rss",
+     "source": "Harvard"},
+
+    {"name": "Stanford Jobs",
+     "url":  "https://careersearch.stanford.edu/jobs?keyword=bioinformatics&format=rss",
+     "source": "Stanford"},
+
+    {"name": "MIT Jobs",
+     "url":  "https://careers.mit.edu/search-jobs/bioinformatics/33432/1?format=rss",
+     "source": "MIT"},
+
+    {"name": "Johns Hopkins University",
+     "url":  "https://jobs.jhu.edu/search-jobs/bioinformatics?format=rss",
+     "source": "Johns Hopkins"},
+
+    {"name": "UCSF Jobs",
+     "url":  "https://jobs.ucsf.edu/search-jobs/bioinformatics?format=rss",
+     "source": "UCSF"},
+
+    # ── UK UNIVERSITIES ──
+    {"name": "Oxford University Jobs",
+     "url":  "https://www.jobs.ox.ac.uk/vacancy/rss?keyword=bioinformatics",
+     "source": "Oxford University"},
+
+    {"name": "Cambridge University Jobs",
+     "url":  "https://www.jobs.cam.ac.uk/job/rss/?keyword=bioinformatics",
+     "source": "Cambridge University"},
+
+    # ── GULF & MIDDLE EAST ──
+    # KAUST posts internationally — best Gulf source
+    {"name": "KAUST Jobs (Saudi Arabia)",
+     "url":  "https://careers.kaust.edu.sa/search-jobs/bioinformatics?format=rss",
+     "source": "KAUST"},
+
+    # ── ASIA PACIFIC ──
+    {"name": "A*STAR Singapore",
+     "url":  "https://www.a-star.edu.sg/Careers/rss",
+     "source": "A*STAR Singapore"},
 ]
 
-# ── KEYWORDS FOR RSS FILTER ──────────────────
-RSS_KEYWORDS = [
+# ═══════════════════════════════════════════════════════
+#  FEED 2 — CONTENT → Website ONLY (Supabase paper_alerts)
+#  Papers, tools, methods, conferences, PhD positions
+# ═══════════════════════════════════════════════════════
+CONTENT_RSS_FEEDS = [
+    # New papers and preprints
+    {"name": "bioRxiv Bioinformatics", "url": "https://connect.biorxiv.org/biorxiv_xml.php?subject=bioinformatics", "source": "bioRxiv", "type": "paper"},
+    {"name": "bioRxiv Genomics",       "url": "https://connect.biorxiv.org/biorxiv_xml.php?subject=genomics",       "source": "bioRxiv", "type": "paper"},
+    {"name": "PubMed Bioinformatics",  "url": "https://pubmed.ncbi.nlm.nih.gov/rss/search/1bioinformatics/?limit=20", "source": "PubMed", "type": "paper"},
+    # New tools and methods
+    {"name": "Bioconductor News",      "url": "https://bioconductor.org/rss-feeds/news.rss",                        "source": "Bioconductor", "type": "tool"},
+    # Conferences and events
+    {"name": "ISCB News",              "url": "https://www.iscb.org/cms_addon/rss/index.php?section=news",          "source": "ISCB", "type": "conference"},
+]
+
+# ── CONTENT KEYWORDS ─────────────────────────────────
+CONTENT_KEYWORDS = [
     "bioinformatics", "computational biology", "genomics", "proteomics",
-    "transcriptomics", "metagenomics", "single-cell", "RNA-seq", "NGS",
-    "machine learning", "deep learning", "AI", "drug discovery",
-    "molecular docking", "MD simulation", "molecular dynamics",
-    "cheminformatics", "structural biology", "systems biology",
-    "epigenomics", "multi-omics", "computational", "omics",
-    "genetics", "variant calling", "GWAS", "nanopore",
+    "transcriptomics", "metagenomics", "single-cell", "scRNA-seq",
+    "RNA-seq", "NGS", "machine learning", "deep learning", "AI",
+    "drug discovery", "molecular docking", "structural biology",
+    "systems biology", "epigenomics", "multi-omics", "nanopore",
+    "spatial transcriptomics", "variant calling", "GWAS", "CRISPR",
+    "alphafold", "protein structure", "pathway analysis", "tool",
+    "pipeline", "software", "method", "algorithm", "conference",
+    "symposium", "workshop", "webinar", "genetics", "omics"
 ]
 
-def load_posted_jobs():
+# ─────────────────────────────────────────────────────
+def load_seen(filename):
     try:
-        with open(POSTED_JOBS_FILE, "r") as f:
+        with open(filename, "r") as f:
             return set(line.strip() for line in f)
     except FileNotFoundError:
         return set()
 
-def save_posted_job(job_id):
-    with open(POSTED_JOBS_FILE, "a") as f:
-        f.write(f"{job_id}\n")
+def save_seen(item_id, filename):
+    with open(filename, "a") as f:
+        f.write(f"{item_id}\n")
 
-def is_relevant(title, description=""):
-    text = (title + " " + description).lower()
-    if any(word in text for word in BLACKLIST):
-        return False
-    return True
+def is_real_job(title, summary=""):
+    text = (title + " " + summary).lower()
+    has_job_word   = any(w in text for w in JOB_TITLE_WORDS)
+    looks_like_paper = any(s in text for s in PAPER_SIGNALS)
+    return has_job_word and not looks_like_paper
 
-def send_to_telegram(message):
+def is_blacklisted(title, desc=""):
+    text = (title + " " + desc).lower()
+    return any(w in text for w in BLACKLIST)
+
+def is_content_relevant(title, summary=""):
+    text = (title + " " + summary).lower()
+    return any(kw.lower() in text for kw in CONTENT_KEYWORDS)
+
+# ─────────────────────────────────────────────────────
+#  TELEGRAM — Jobs only
+# ─────────────────────────────────────────────────────
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message,
+                "parse_mode": "Markdown", "disable_web_page_preview": True}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200:
+            print("  ✅ Telegram sent.")
+        else:
+            print(f"  ❌ Telegram error: {r.status_code} {r.text}")
+    except Exception as e:
+        print(f"  ❌ Telegram exception: {e}")
+
+def format_job_telegram(title, company, location, link, source, country=""):
+    tag = f"#{country.upper()}Jobs" if country else ""
+    return (
+        f"💼 *Bioinformatics Job*\n\n"
+        f"📌 *{title}*\n"
+        f"🏢 {company}\n"
+        f"📍 {location}\n"
+        f"🔗 {link}\n\n"
+        f"_Via {source} · BIC_\n"
+        f"#Bioinformatics #BICJobs {tag}"
+    )
+
+# ─────────────────────────────────────────────────────
+#  SUPABASE — Save jobs and content to website DB
+# ─────────────────────────────────────────────────────
+def save_job_to_supabase(title, company, location, url, source, country=""):
+    if not SUPABASE_KEY:
+        return
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    }
+    data = {
+        "title": title, "company": company, "location": location,
+        "country": country.upper(), "apply_url": url,
+        "source": source, "posted_by": "bot", "is_active": True
     }
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            print("✅ Telegram message sent.")
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/job_posts",
+                          headers=headers, json=data, timeout=10)
+        if r.status_code in (200, 201):
+            print(f"  ✅ Job saved to website DB.")
         else:
-            print(f"❌ Telegram error: {response.status_code} {response.text}")
+            print(f"  ⚠️  Supabase job error: {r.status_code}")
     except Exception as e:
-        print(f"❌ Telegram exception: {e}")
+        print(f"  ⚠️  Supabase exception: {e}")
 
-def format_adzuna_message(job, country):
-    title    = job.get('title', 'N/A')
-    company  = job.get('company', {}).get('display_name', 'N/A')
-    location = job.get('location', {}).get('display_name', 'N/A')
-    link     = job.get('redirect_url', '#')
-    salary   = job.get('salary_min')
-    salary_text = f"💰 *Salary:* ${int(salary):,}/year\n" if salary else ""
-    country_upper = country.upper()
+def save_content_to_supabase(title, abstract, url, source, content_type):
+    if not SUPABASE_KEY:
+        return
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    }
+    data = {
+        "title": title, "abstract": abstract[:1000],
+        "url": url, "source": source,
+        "posted_by": "bot", "is_approved": True,
+        "field_tags": [content_type]
+    }
+    try:
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/paper_alerts",
+                          headers=headers, json=data, timeout=10)
+        if r.status_code in (200, 201):
+            print(f"  ✅ Content saved to website ({content_type}).")
+        else:
+            print(f"  ⚠️  Supabase content error: {r.status_code}")
+    except Exception as e:
+        print(f"  ⚠️  Supabase exception: {e}")
 
-    return (
-        f"🔬 *New Bioinformatics Job — {country_upper}*\n\n"
-        f"📌 *{title}*\n"
-        f"🏢 *Company:* {company}\n"
-        f"📍 *Location:* {location}\n"
-        f"{salary_text}"
-        f"🔗 *Apply:* {link}\n\n"
-        f"_Via Adzuna · BioInfoConnects_\n"
-        f"#Bioinformatics #BIC #OmicsJobs #{country_upper}Jobs"
-    )
-
-def format_rss_message(entry, source_name):
-    title    = entry.get('title', 'N/A').strip()
-    link     = entry.get('link', '#').strip()
-    summary  = entry.get('summary', '')[:200].strip()
-    summary_text = f"📝 _{summary}..._\n" if summary else ""
-
-    return (
-        f"💼 *New Job — {source_name}*\n\n"
-        f"📌 *{title}*\n"
-        f"{summary_text}"
-        f"🔗 *Apply:* {link}\n\n"
-        f"_Via {source_name} · BioInfoConnects_\n"
-        f"#Bioinformatics #BIC #OmicsJobs"
-    )
-
-def fetch_adzuna_jobs(posted_jobs):
-    new_jobs = []
+# ─────────────────────────────────────────────────────
+#  FETCH JOBS — Adzuna API → Telegram + Website
+# ─────────────────────────────────────────────────────
+def fetch_adzuna_jobs(seen):
+    count = 0
     for country in COUNTRIES:
         print(f"  Checking Adzuna — {country.upper()}...")
         url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
         params = {
-            "app_id":          ADZUNA_APP_ID,
-            "app_key":         ADZUNA_APP_KEY,
-            "results_per_page": 50,
-            "what":            KEYWORDS,
-            "sort_by":         "date",
-            "max_days_old":    7,   # Search last 7 days — catches maximum jobs
+            "app_id": ADZUNA_APP_ID, "app_key": ADZUNA_APP_KEY,
+            "results_per_page": 50, "what": JOB_KEYWORDS,
+            "sort_by": "date", "max_days_old": 7
         }
         try:
             r = requests.get(url, params=params, timeout=15)
             if r.status_code == 200:
-                results = r.json().get("results", [])
-                for job in results:
-                    job_id = f"adzuna_{job.get('id')}"
-                    title  = job.get('title', '')
-                    desc   = job.get('description', '')
-                    if job_id not in posted_jobs and is_relevant(title, desc):
-                        new_jobs.append((job_id, format_adzuna_message(job, country)))
-                        posted_jobs.add(job_id)
+                for job in r.json().get("results", []):
+                    jid   = f"adzuna_{job.get('id')}"
+                    title = job.get('title', '')
+                    desc  = job.get('description', '')
+                    if jid in seen or is_blacklisted(title, desc):
+                        continue
+                    company  = job.get('company', {}).get('display_name', 'N/A')
+                    location = job.get('location', {}).get('display_name', 'N/A')
+                    link     = job.get('redirect_url', '#')
+                    # Post to Telegram (jobs only)
+                    msg = format_job_telegram(title, company, location, link, "Adzuna", country)
+                    send_telegram(msg)
+                    # Save to website database
+                    save_job_to_supabase(title, company, location, link, "Adzuna", country)
+                    save_seen(jid, POSTED_JOBS_FILE)
+                    seen.add(jid)
+                    count += 1
+                    time.sleep(2)
             else:
                 print(f"  ⚠️  Adzuna {country.upper()}: HTTP {r.status_code}")
         except Exception as e:
-            print(f"  ⚠️  Adzuna {country.upper()} error: {e}")
+            print(f"  ⚠️  Adzuna {country.upper()}: {e}")
         time.sleep(1)
-    return new_jobs
+    return count
 
-def fetch_rss_jobs(posted_jobs):
-    new_jobs = []
-    for feed in RSS_FEEDS:
-        print(f"  Checking RSS — {feed['name']}...")
+# ─────────────────────────────────────────────────────
+#  FETCH RSS JOBS — Nature/EBI/EMBL → Telegram + Website
+# ─────────────────────────────────────────────────────
+def fetch_rss_jobs(seen):
+    count = 0
+    for feed in JOB_RSS_FEEDS:
+        print(f"  Checking Jobs RSS — {feed['name']}...")
         try:
             parsed = feedparser.parse(feed['url'])
             for entry in parsed.entries:
-                title   = entry.get('title', '')
-                link    = entry.get('link', '')
-                summary = entry.get('summary', '')
-                job_id  = f"rss_{feed['source']}_{link}"
-
-                # Check keyword relevance
-                text = (title + " " + summary).lower()
-                if not any(kw.lower() in text for kw in RSS_KEYWORDS):
+                title   = entry.get('title', '').strip()
+                link    = entry.get('link', '').strip()
+                summary = entry.get('summary', '').strip()
+                jid     = f"rss_job_{feed['source']}_{link}"
+                if jid in seen:
                     continue
-
-                if job_id not in posted_jobs and is_relevant(title, summary):
-                    new_jobs.append((job_id, format_rss_message(entry, feed['name'])))
-                    posted_jobs.add(job_id)
+                if not is_real_job(title, summary):
+                    print(f"  ⏭  Not a job: {title[:50]}")
+                    continue
+                if is_blacklisted(title, summary):
+                    continue
+                # Post to Telegram
+                msg = format_job_telegram(title, "See link", "See link", link, feed['source'])
+                send_telegram(msg)
+                # Save to website
+                save_job_to_supabase(title, "", link, feed['source'], "")
+                save_seen(jid, POSTED_JOBS_FILE)
+                seen.add(jid)
+                count += 1
+                time.sleep(2)
         except Exception as e:
-            print(f"  ⚠️  RSS {feed['name']} error: {e}")
+            print(f"  ⚠️  RSS Jobs {feed['name']}: {e}")
         time.sleep(1)
-    return new_jobs
+    return count
 
+# ─────────────────────────────────────────────────────
+#  FETCH CONTENT — Papers/Tools/Conferences → Website ONLY
+# ─────────────────────────────────────────────────────
+def fetch_website_content(seen):
+    count = 0
+    for feed in CONTENT_RSS_FEEDS:
+        print(f"  Checking Content RSS — {feed['name']}...")
+        try:
+            parsed = feedparser.parse(feed['url'])
+            for entry in parsed.entries:
+                title   = entry.get('title', '').strip()
+                link    = entry.get('link', '').strip()
+                summary = entry.get('summary', '').strip()
+                cid     = f"content_{feed['source']}_{link}"
+                if cid in seen:
+                    continue
+                if not is_content_relevant(title, summary):
+                    continue
+                # Save to website ONLY — no Telegram
+                save_content_to_supabase(
+                    title, summary, link,
+                    feed['source'], feed['type']
+                )
+                save_seen(cid, POSTED_CONTENT_FILE)
+                seen.add(cid)
+                count += 1
+                time.sleep(1)
+        except Exception as e:
+            print(f"  ⚠️  Content RSS {feed['name']}: {e}")
+        time.sleep(1)
+    return count
+
+# ─────────────────────────────────────────────────────
+#  MAIN LOOP
+# ─────────────────────────────────────────────────────
 def main():
     print("=" * 55)
     print("  OmicsJobAI Bot — BioInfoConnects (BIC)")
-    print("  Legal sources: Adzuna API + Public RSS feeds")
+    print("  Telegram = Jobs ONLY")
+    print("  Website  = Jobs + Papers + Tools + Conferences")
     print("=" * 55)
 
     while True:
         try:
-            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting job search...")
-            posted_jobs = load_posted_jobs()
+            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting cycle...")
 
-            # Fetch from Adzuna (licensed aggregator)
-            adzuna_jobs = fetch_adzuna_jobs(posted_jobs)
-            print(f"  Adzuna: {len(adzuna_jobs)} new jobs found")
+            seen_jobs    = load_seen(POSTED_JOBS_FILE)
+            seen_content = load_seen(POSTED_CONTENT_FILE)
 
-            # Fetch from public RSS feeds
-            rss_jobs = fetch_rss_jobs(posted_jobs)
-            print(f"  RSS feeds: {len(rss_jobs)} new jobs found")
+            # ── JOBS → Telegram + Website ──
+            print("\n── JOBS (Telegram + Website) ──")
+            j1 = fetch_adzuna_jobs(seen_jobs)
+            j2 = fetch_rss_jobs(seen_jobs)
+            print(f"  Total new jobs: {j1 + j2}")
 
-            all_new_jobs = adzuna_jobs + rss_jobs
-            print(f"  Total new jobs this cycle: {len(all_new_jobs)}")
+            # ── CONTENT → Website only ──
+            print("\n── CONTENT (Website only) ──")
+            c1 = fetch_website_content(seen_content)
+            print(f"  Total new content items: {c1}")
 
-            for job_id, message in all_new_jobs:
-                send_to_telegram(message)
-                save_posted_job(job_id)
-                time.sleep(2)
-
-            print(f"  Done. Sleeping 3600 seconds (1 hour)...")
+            print(f"\n  ✅ Cycle complete. Sleeping 1 hour...")
             time.sleep(3600)
 
         except Exception as e:
             print(f"❌ Critical error: {e}")
-            print("  Sleeping 300 seconds before retry...")
             time.sleep(300)
 
 if __name__ == "__main__":
