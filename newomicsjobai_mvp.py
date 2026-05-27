@@ -3,6 +3,10 @@ import requests
 import time
 import feedparser
 from datetime import datetime
+import smtplib
+import schedule
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 # ═══════════════════════════════════════════════════════
 #  OmicsJobAI Bot — BioInfoConnects (BIC)
@@ -426,9 +430,13 @@ def main():
             print(f"  Total new jobs: {j1 + j2}")
 
             # ── CONTENT → Website only ──
-            print("\n── CONTENT (Website only) ──")
+       
+           print("\n── CONTENT (Website only) ──")
             c1 = fetch_website_content(seen_content)
             print(f"  Total new content items: {c1}")
+
+            # ── NEWSLETTER → Every Monday ──
+            schedule.run_pending()
 
             print(f"\n  ✅ Cycle complete. Sleeping 1 hour...")
             time.sleep(3600)
