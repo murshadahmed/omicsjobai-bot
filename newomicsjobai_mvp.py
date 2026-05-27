@@ -436,6 +436,185 @@ def main():
         except Exception as e:
             print(f"❌ Critical error: {e}")
             time.sleep(300)
+            # ─────────────────────────────────────────────
+# BIC WEEKLY NEWSLETTER — runs every Monday 9AM
+# ─────────────────────────────────────────────
+import smtplib
+import schedule
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+
+def fetch_newsletter_papers():
+    papers = []
+    try:
+        feed = feedparser.parse(
+            "https://connect.biorxiv.org/biorxiv_xml.php?subject=bioinformatics"
+        )
+        for entry in feed.entries[:5]:
+            title   = entry.get('title','').strip()
+            link    = entry.get('link','').strip()
+            summary = entry.get('summary','').strip()
+            if title:
+                papers.append({"title":title,"summary":summary[:200],"link":link})
+    except Exception as e:
+        print(f"Newsletter papers error: {e}")
+    return papers[:3]
+
+def fetch_newsletter_jobs():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return []
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/job_posts"
+            f"?is_active=eq.true&order=posted_at.desc&limit=3",
+            headers=headers, timeout=10
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"Newsletter jobs error: {e}")
+    return []
+
+def fetch_newsletter_subscribers():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return []
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/newsletter_subscribers"
+            f"?is_active=eq.true&select=email,name",
+            headers=headers, timeout=10
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"Newsletter subscribers error: {e}")
+    return []
+
+def build_newsletter_html(papers, jobs, week_str):
+    papers_html = ""
+    for i, p in enumerate(papers, 1):
+        papers_html += f"""
+        <div style="margin-bottom:1.2rem;padding:1rem;background:#f7fdfb;border-left:3px solid #1aab93;border-radius:0 8px 8px 0;">
+          <div style="font-size:0.72rem;color:#1aab93;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem;">Paper {i} · bioRxiv</div>
+          <strong style="color:#0d1f1c;font-size:0.9rem;">{p['title'][:120]}</strong>
+          <p style="color:#5a7a75;font-size:0.82rem;margin:0.4rem 0;">{p['summary'][:180]}...</p>
+          <a href="{p['link']}" style="color:#1aab93;font-size:0.8rem;">Read paper →</a>
+        </div>"""
+
+    jobs_html = ""
+    for j in jobs:
+        jobs_html += f"""
+        <div style="margin-bottom:0.75rem;padding:0.75rem 1rem;background:#f7fdfb;border-radius:8px;border:1px solid #d0e8e4;">
+          <strong style="color:#0d1f1c;font-size:0.85rem;">💼 {j.get('title','')[:80]}</strong><br/>
+          <span style="color:#5a7a75;font-size:0.78rem;">{j.get('company','')} · {j.get('location','')}</span><br/>
+          <a href="{j.get('apply_url','#')}" style="color:#1aab93;font-size:0.78rem;">Apply →</a>
+        </div>"""
+
+    if not jobs_html:
+        jobs_html = '<p style="color:#5a7a75;font-size:0.85rem;">Visit <a href="https://bioinfoconnects.netlify.app" style="color:#1aab93;">bioinfoconnects.netlify.app</a> for all jobs.</p>'
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"/></head>
+<body style="margin:0;padding:0;background:#f0f4f3;font-family:Arial,sans-serif;">
+  <div style="background:#0d1f1c;padding:1.5rem;text-align:center;">
+    <div style="display:inline-block;background:#1aab93;padding:6px 16px;border-radius:6px;color:white;font-weight:700;font-size:1.1rem;letter-spacing:2px;">BIC</div>
+    <h1 style="color:white;font-size:1.2rem;margin:0.5rem 0;">Weekly Bioinformatics Digest</h1>
+    <p style="color:#7aada7;font-size:0.82rem;margin:0;">{week_str}</p>
+  </div>
+  <div style="max-width:580px;margin:0 auto;padding:1.5rem 1rem;">
+    <h2 style="color:#0d1f1c;font-size:0.95rem;text-transform:uppercase;letter-spacing:1px;">🧬 Top Papers This Week</h2>
+    {papers_html}
+    <h2 style="color:#0d1f1c;font-size:0.95rem;text-transform:uppercase;letter-spacing:1px;margin-top:1.5rem;">💼 Selected Jobs</h2>
+    {jobs_html}
+    <div style="background:#0d1f1c;border-radius:10px;padding:1.25rem;text-align:center;margin:1.5rem 0;">
+      <a href="https://bioinfoconnects.netlify.app"
+         style="background:#1aab93;color:white;padding:11px 26px;border-radius:7px;text-decoration:none;font-weight:600;font-size:0.88rem;">
+        Visit BioInfoConnects →
+      </a>
+    </div>
+    <p style="color:#7aada7;font-size:0.72rem;text-align:center;">
+      © 2026 BioInfoConnects (BIC) · Founded by MMA, Dr. Salman Sadullah Usmani & Dr. Amanat Ali<br/>
+      Albert Einstein College of Medicine, New York, USA<br/>
+      You received this because you subscribed at bioinfoconnects.netlify.app
+    </p>
+  </div>
+</body></html>"""
+
+def send_weekly_newsletter():
+    week_str = datetime.now().strftime("Week of %B %d, %Y")
+    print(f"\n{'='*50}")
+    print(f"BIC Weekly Newsletter — {week_str}")
+    print(f"{'='*50}")
+
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        print("Gmail credentials missing — skipping newsletter.")
+        return
+
+    papers      = fetch_newsletter_papers()
+    jobs        = fetch_newsletter_jobs()
+    subscribers = fetch_newsletter_subscribers()
+
+    print(f"Papers: {len(papers)} | Jobs: {len(jobs)} | Subscribers: {len(subscribers)}")
+
+    if not subscribers:
+        print("No subscribers yet — skipping send.")
+        return
+
+    html = build_newsletter_html(papers, jobs, week_str)
+    sent = 0
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            for sub in subscribers:
+                try:
+                    msg = MIMEMultipart("alternative")
+                    msg["Subject"] = f"BIC Weekly Digest — {week_str}"
+                    msg["From"]    = f"BioInfoConnects BIC <{GMAIL_ADDRESS}>"
+                    msg["To"]      = sub['email']
+                    msg.attach(MIMEText(html, "html"))
+                    server.sendmail(GMAIL_ADDRESS, sub['email'], msg.as_string())
+                    print(f"  ✅ Sent to {sub['email']}")
+                    sent += 1
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"  ❌ Failed {sub['email']}: {e}")
+    except Exception as e:
+        print(f"  ❌ Gmail error: {e}")
+
+    print(f"Newsletter done. Sent: {sent}/{len(subscribers)}")
+
+    # Also post digest to Telegram
+    try:
+        paper_lines = "\n".join([f"📄 {p['title'][:60]}..." for p in papers])
+        msg = (
+            f"📰 *BIC Weekly Digest — {week_str}*\n\n"
+            f"🧬 *Top Papers:*\n{paper_lines}\n\n"
+            f"🌐 Full digest: bioinfoconnects.netlify.app\n"
+            f"#BIC #Bioinformatics #WeeklyDigest"
+        )
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10
+        )
+        print("  ✅ Digest posted to Telegram.")
+    except Exception as e:
+        print(f"  ❌ Telegram digest error: {e}")
+
+# Schedule newsletter every Monday 9AM UTC
+schedule.every().monday.at("09:00").do(send_weekly_newsletter)
 
 if __name__ == "__main__":
     main()
