@@ -411,11 +411,13 @@ def fetch_website_content(seen):
 # ─────────────────────────────────────────────────────
 #  MAIN LOOP
 # ─────────────────────────────────────────────────────
+
 def main():
     print("=" * 55)
     print("  OmicsJobAI Bot — BioInfoConnects (BIC)")
     print("  Telegram = Jobs ONLY")
     print("  Website  = Jobs + Papers + Tools + Conferences")
+    print("  Newsletter = Every Monday 9AM UTC")
     print("=" * 55)
 
     while True:
@@ -425,19 +427,16 @@ def main():
             seen_jobs    = load_seen(POSTED_JOBS_FILE)
             seen_content = load_seen(POSTED_CONTENT_FILE)
 
-            # ── JOBS → Telegram + Website ──
             print("\n── JOBS (Telegram + Website) ──")
             j1 = fetch_adzuna_jobs(seen_jobs)
             j2 = fetch_rss_jobs(seen_jobs)
             print(f"  Total new jobs: {j1 + j2}")
 
-            # ── CONTENT → Website only ──
-       
-           print("\n── CONTENT (Website only) ──")
+            print("\n── CONTENT (Website only) ──")
             c1 = fetch_website_content(seen_content)
             print(f"  Total new content items: {c1}")
 
-            # ── NEWSLETTER → Every Monday ──
+            print("\n── NEWSLETTER CHECK ──")
             schedule.run_pending()
 
             print(f"\n  ✅ Cycle complete. Sleeping 1 hour...")
@@ -446,6 +445,9 @@ def main():
         except Exception as e:
             print(f"❌ Critical error: {e}")
             time.sleep(300)
+
+if __name__ == "__main__":
+    main()
             # ─────────────────────────────────────────────
 # BIC WEEKLY NEWSLETTER — runs every Monday 9AM
 # ─────────────────────────────────────────────
