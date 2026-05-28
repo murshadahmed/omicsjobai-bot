@@ -27,6 +27,8 @@ ADZUNA_APP_KEY     = os.getenv("ADZUNA_APP_KEY")
 # Add them as Railway environment variables — NEVER hardcode here
 SUPABASE_URL = os.getenv("SUPABASE_URL")   # e.g. https://xxxxx.supabase.co
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")   # your anon/public key from Supabase
+GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
 POSTED_JOBS_FILE    = "posted_jobs.txt"
 POSTED_CONTENT_FILE = "posted_content.txt"
@@ -447,13 +449,6 @@ def main():
             # ─────────────────────────────────────────────
 # BIC WEEKLY NEWSLETTER — runs every Monday 9AM
 # ─────────────────────────────────────────────
-import smtplib
-import schedule
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-
-GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
 def fetch_newsletter_papers():
     papers = []
