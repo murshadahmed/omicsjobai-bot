@@ -29,9 +29,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")   # e.g. https://xxxxx.supabase.co
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")   # your anon/public key from Supabase
 GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
-
-POSTED_JOBS_FILE    = "posted_jobs.txt"
-POSTED_CONTENT_FILE = "posted_content.txt"
+import tempfile
+POSTED_JOBS_FILE    = "/tmp/posted_jobs.txt"
+POSTED_CONTENT_FILE = "/tmp/posted_content.txt"
 
 # ── ADZUNA SUPPORTED COUNTRIES ───────────────────────
 COUNTRIES = [
@@ -196,7 +196,15 @@ CONTENT_KEYWORDS = [
 
 # ─────────────────────────────────────────────────────
 def load_seen(filename):
+    # Reset every 7 days to find new jobs again
     try:
+        # If file older than 7 days delete it
+        import os
+        if os.path.exists(filename):
+            age_days = (time.time() - os.path.getmtime(filename)) / 86400
+            if age_days > 7:
+                os.remove(filename)
+                print(f"  🔄 Reset seen file: {filename}")
         with open(filename, "r") as f:
             return set(line.strip() for line in f)
     except FileNotFoundError:
