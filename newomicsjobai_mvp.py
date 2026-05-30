@@ -26,8 +26,8 @@ GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
 # Use /tmp so files persist during session but reset on redeploy
 # Change v2 to v3 anytime you want a full reset
-POSTED_JOBS_FILE    = "/tmp/posted_jobs_v2.txt"
-POSTED_CONTENT_FILE = "/tmp/posted_content_v2.txt"
+POSTED_JOBS_FILE = "/tmp/posted_jobs_v3.txt"
+POSTED_CONTENT_FILE = "/tmp/posted_content_v3.txt"
 
 # ── ADZUNA COUNTRIES ──────────────────────────────────
 COUNTRIES = [
