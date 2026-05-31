@@ -29,10 +29,15 @@ POSTED_JOBS_FILE    = "/tmp/posted_jobs_v4.txt"
 POSTED_CONTENT_FILE = "/tmp/posted_content_v4.txt"
 
 # ── ADZUNA COUNTRIES ──────────────────────────────────
+# IMPORTANT: Adzuna free tier = 250 API calls/day max
+# 13 countries × 24 cycles = 312 calls/day — EXCEEDS LIMIT
+# 5 countries × 24 cycles = 120 calls/day — safe
 COUNTRIES = [
-    "us", "ca",
-    "gb", "de", "fr", "nl", "at", "be", "ch", "pl",
-    "au", "sg", "in",
+    "us",   # USA — largest bioinformatics market
+    "gb",   # UK — EMBL-EBI, Sanger, major institutes
+    "de",   # Germany — EMBL, Max Planck
+    "ca",   # Canada
+    "au",   # Australia
 ]
 
 # ── JOB SEARCH KEYWORDS ───────────────────────────────
@@ -301,18 +306,28 @@ def save_content_to_supabase(title, abstract, url, source, content_type):
 # ── FETCH JOBS ────────────────────────────────────────
 def fetch_adzuna_jobs(seen):
     count = 0
+    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+        print("  ⚠️  Adzuna API keys missing — skipping job search")
+        return 0
+
     for country in COUNTRIES:
-        print(f"  Checking Adzuna — {country.upper()}...")
-        url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
+        print(f"  Checking Adzuna — {country.upper()}...", flush=True)
+        api_url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
         params = {
-            "app_id": ADZUNA_APP_ID, "app_key": ADZUNA_APP_KEY,
-            "results_per_page": 50, "what": JOB_KEYWORDS,
-            "sort_by": "date", "max_days_old": 7
+            "app_id": ADZUNA_APP_ID,
+            "app_key": ADZUNA_APP_KEY,
+            "results_per_page": 50,
+            "what": JOB_KEYWORDS,
+            "sort_by": "date",
+            "max_days_old": 7
         }
         try:
-            r = requests.get(url, params=params, timeout=15)
+            r = requests.get(api_url, params=params, timeout=30)
+            print(f"  Adzuna {country.upper()} status: {r.status_code}", flush=True)
             if r.status_code == 200:
-                for job in r.json().get("results", []):
+                results = r.json().get("results", [])
+                print(f"  Adzuna {country.upper()} found: {len(results)} results", flush=True)
+                for job in results:
                     jid   = f"adzuna_{job.get('id')}"
                     title = job.get('title', '')
                     desc  = job.get('description', '')
@@ -329,11 +344,18 @@ def fetch_adzuna_jobs(seen):
                     seen.add(jid)
                     count += 1
                     time.sleep(2)
+            elif r.status_code == 401:
+                print(f"  ❌ Adzuna AUTH FAILED — check ADZUNA_APP_ID and ADZUNA_APP_KEY in Railway!")
+                break  # No point checking other countries if auth fails
             else:
-                print(f"  ⚠️  Adzuna {country.upper()}: HTTP {r.status_code}")
+                print(f"  ⚠️  Adzuna {country.upper()}: HTTP {r.status_code} — {r.text[:100]}")
+        except requests.exceptions.Timeout:
+            print(f"  ⚠️  Adzuna {country.upper()}: TIMEOUT after 30s")
+        except requests.exceptions.ConnectionError as e:
+            print(f"  ⚠️  Adzuna {country.upper()}: CONNECTION ERROR — {e}")
         except Exception as e:
-            print(f"  ⚠️  Adzuna {country.upper()}: {e}")
-        time.sleep(1)
+            print(f"  ⚠️  Adzuna {country.upper()}: {type(e).__name__} — {e}")
+        time.sleep(2)
     return count
 
 def fetch_rss_jobs(seen):
@@ -569,6 +591,10 @@ def main():
     print("  Newsletter = Every Monday 9AM UTC")
     print("=" * 55)
 
+    # Wait 10 seconds for Railway container network to be fully ready
+    print("  Waiting 10s for network readiness...")
+    time.sleep(10)
+
     while True:
         try:
             print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting cycle...")
@@ -588,8 +614,8 @@ def main():
             print("\n── NEWSLETTER CHECK ──")
             schedule.run_pending()
 
-            print(f"\n  ✅ Cycle complete. Sleeping 1 hour...")
-            time.sleep(3600)
+            print(f"\n  ✅ Cycle complete. Sleeping 2 hours...")
+            time.sleep(7200)  # 2 hours — keeps API calls under 250/day limit
 
         except Exception as e:
             print(f"❌ Critical error: {e}")
