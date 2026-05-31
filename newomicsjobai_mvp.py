@@ -24,10 +24,9 @@ SUPABASE_KEY       = os.getenv("SUPABASE_KEY")
 GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
-# Use /tmp so files persist during session but reset on redeploy
-# Change v2 to v3 anytime you want a full reset
-POSTED_JOBS_FILE = "/tmp/posted_jobs_v3.txt"
-POSTED_CONTENT_FILE = "/tmp/posted_content_v3.txt"
+# Change v4 to v5 anytime you want a full reset of seen jobs/papers
+POSTED_JOBS_FILE    = "/tmp/posted_jobs_v4.txt"
+POSTED_CONTENT_FILE = "/tmp/posted_content_v4.txt"
 
 # ── ADZUNA COUNTRIES ──────────────────────────────────
 COUNTRIES = [
@@ -73,13 +72,20 @@ BLACKLIST = [
 ]
 
 # ── JOB RSS FEEDS ─────────────────────────────────────
+# NOTE ON LINKEDIN: LinkedIn blocks all scraping and has no
+# public RSS feed. It violates their Terms of Service.
+# We use Adzuna which LEGALLY aggregates LinkedIn jobs + Indeed
+# + Glassdoor + 1000s of other sources via licensing agreements.
+# So Adzuna already covers LinkedIn jobs legally.
 JOB_RSS_FEEDS = [
+    # International journals and societies
     {"name": "Nature Careers",
      "url":  "https://www.nature.com/naturecareers/rss/bioinformatics",
      "source": "Nature Careers"},
     {"name": "Science Careers (AAAS)",
      "url":  "https://jobs.sciencecareers.org/rss/jobs/?k=bioinformatics",
      "source": "Science Careers"},
+    # Research institutes
     {"name": "EMBL-EBI Jobs",
      "url":  "https://www.ebi.ac.uk/about/jobs/rss",
      "source": "EMBL-EBI"},
@@ -98,12 +104,14 @@ JOB_RSS_FEEDS = [
     {"name": "NIH USA Jobs",
      "url":  "https://jobs.nih.gov/vacancies/rss/bioinformatics.xml",
      "source": "NIH"},
+    # Universities
     {"name": "Oxford University Jobs",
      "url":  "https://www.jobs.ox.ac.uk/vacancy/rss?keyword=bioinformatics",
      "source": "Oxford University"},
     {"name": "Cambridge University Jobs",
      "url":  "https://www.jobs.cam.ac.uk/job/rss/?keyword=bioinformatics",
      "source": "Cambridge University"},
+    # Gulf and Asia
     {"name": "KAUST Jobs (Saudi Arabia)",
      "url":  "https://careers.kaust.edu.sa/search-jobs/bioinformatics?format=rss",
      "source": "KAUST"},
@@ -112,7 +120,9 @@ JOB_RSS_FEEDS = [
      "source": "A*STAR Singapore"},
 ]
 
-# ── CONTENT RSS FEEDS (Website only — papers/tools/conferences) ──
+# ── CONTENT RSS FEEDS ─────────────────────────────────
+# Genome Biology REMOVED — replaced with Nature Communications
+# and Oxford Bioinformatics journal as requested
 CONTENT_RSS_FEEDS = [
     # High quality journals
     {"name": "Nature Biotechnology",
@@ -124,12 +134,14 @@ CONTENT_RSS_FEEDS = [
     {"name": "Nature Genetics",
      "url":  "https://www.nature.com/ng.rss",
      "source": "Nature Genetics", "type": "paper"},
-    {"name": "Genome Biology",
-     "url":  "https://genomebiology.biomedcentral.com/articles/rss",
-     "source": "Genome Biology", "type": "paper"},
-    {"name": "Bioinformatics Journal",
+    # NEW: Nature Communications
+    {"name": "Nature Communications",
+     "url":  "https://www.nature.com/ncomms.rss",
+     "source": "Nature Communications", "type": "paper"},
+    # NEW: Oxford Bioinformatics journal
+    {"name": "Bioinformatics (Oxford OUP)",
      "url":  "https://academic.oup.com/rss/site_5504/3143.xml",
-     "source": "Bioinformatics Journal", "type": "paper"},
+     "source": "Bioinformatics OUP", "type": "paper"},
     {"name": "PLOS Computational Biology",
      "url":  "https://journals.plos.org/ploscompbiol/feed/atom",
      "source": "PLOS Computational Biology", "type": "paper"},
@@ -280,7 +292,7 @@ def save_content_to_supabase(title, abstract, url, source, content_type):
         if r.status_code in (200, 201):
             print(f"  ✅ Content saved ({content_type}): {title[:50]}")
         elif r.status_code == 409:
-            pass  # Duplicate — already saved, skip silently
+            pass  # Duplicate silently skipped
         else:
             print(f"  ⚠️  Supabase content error: {r.status_code}")
     except Exception as e:
@@ -301,16 +313,18 @@ def fetch_adzuna_jobs(seen):
             r = requests.get(url, params=params, timeout=15)
             if r.status_code == 200:
                 for job in r.json().get("results", []):
-                    jid      = f"adzuna_{job.get('id')}"
-                    title    = job.get('title', '')
-                    desc     = job.get('description', '')
+                    jid   = f"adzuna_{job.get('id')}"
+                    title = job.get('title', '')
+                    desc  = job.get('description', '')
                     if jid in seen or is_blacklisted(title, desc):
                         continue
                     company  = job.get('company', {}).get('display_name', 'N/A')
                     location = job.get('location', {}).get('display_name', 'N/A')
                     link     = job.get('redirect_url', '#')
-                    send_telegram(format_job_telegram(title, company, location, link, "Adzuna", country))
-                    save_job_to_supabase(title, company, location, link, "Adzuna", country)
+                    send_telegram(format_job_telegram(
+                        title, company, location, link, "Adzuna", country))
+                    save_job_to_supabase(
+                        title, company, location, link, "Adzuna", country)
                     save_seen(jid, POSTED_JOBS_FILE)
                     seen.add(jid)
                     count += 1
@@ -339,7 +353,8 @@ def fetch_rss_jobs(seen):
                     continue
                 if is_blacklisted(title, summary):
                     continue
-                send_telegram(format_job_telegram(title, "See link", "See link", link, feed['source']))
+                send_telegram(format_job_telegram(
+                    title, "See link", "See link", link, feed['source']))
                 save_job_to_supabase(title, "", link, feed['source'], "")
                 save_seen(jid, POSTED_JOBS_FILE)
                 seen.add(jid)
@@ -366,7 +381,8 @@ def fetch_website_content(seen):
                     continue
                 if not is_content_relevant(title, summary):
                     continue
-                save_content_to_supabase(title, summary, link, feed['source'], feed['type'])
+                save_content_to_supabase(
+                    title, summary, link, feed['source'], feed['type'])
                 save_seen(cid, POSTED_CONTENT_FILE)
                 seen.add(cid)
                 count += 1
@@ -376,19 +392,19 @@ def fetch_website_content(seen):
         time.sleep(1)
     return count
 
-# ── NEWSLETTER FUNCTIONS ──────────────────────────────
+# ── NEWSLETTER ────────────────────────────────────────
 def fetch_newsletter_papers():
     papers = []
     try:
         feed = feedparser.parse(
-            "https://connect.biorxiv.org/biorxiv_xml.php?subject=bioinformatics"
-        )
+            "https://connect.biorxiv.org/biorxiv_xml.php?subject=bioinformatics")
         for entry in feed.entries[:5]:
             title   = entry.get('title', '').strip()
             link    = entry.get('link', '').strip()
             summary = entry.get('summary', '').strip()
             if title:
-                papers.append({"title": title, "summary": summary[:200], "link": link})
+                papers.append({
+                    "title": title, "summary": summary[:200], "link": link})
     except Exception as e:
         print(f"Newsletter papers error: {e}")
     return papers[:3]
@@ -396,13 +412,15 @@ def fetch_newsletter_papers():
 def fetch_newsletter_jobs():
     if not SUPABASE_URL or not SUPABASE_KEY:
         return []
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/job_posts"
             f"?is_active=eq.true&order=posted_at.desc&limit=3",
-            headers=headers, timeout=10
-        )
+            headers=headers, timeout=10)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -412,13 +430,15 @@ def fetch_newsletter_jobs():
 def fetch_newsletter_subscribers():
     if not SUPABASE_URL or not SUPABASE_KEY:
         return []
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/newsletter_subscribers"
             f"?is_active=eq.true&select=email,name",
-            headers=headers, timeout=10
-        )
+            headers=headers, timeout=10)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -467,7 +487,7 @@ def build_newsletter_html(papers, jobs, week_str):
       </a>
     </div>
     <p style="color:#7aada7;font-size:0.72rem;text-align:center;">
-      © 2026 BioInfoConnects (BIC) · Founded by MMA, Dr. Salman Sadullah Usmani &amp; Dr. Amanat Ali<br/>
+      © 2026 BioInfoConnects (BIC) · Founded by MSA<br/>
       Albert Einstein College of Medicine, New York, USA<br/>
       You received this because you subscribed at bioinfoconnects.netlify.app
     </p>
@@ -517,7 +537,6 @@ def send_weekly_newsletter():
 
     print(f"Newsletter done. Sent: {sent}/{len(subscribers)}")
 
-    # Post digest to Telegram too
     try:
         paper_lines = "\n".join([f"📄 {p['title'][:60]}..." for p in papers])
         requests.post(
