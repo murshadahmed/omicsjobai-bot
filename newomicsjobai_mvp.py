@@ -25,7 +25,7 @@ GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
 # Change v4 to v5 anytime you want a full reset of seen jobs/papers
-POSTED_JOBS_FILE    = "/tmp/posted_jobs_v5.txt"
+POSTED_JOBS_FILE    = "/tmp/posted_jobs_v6.txt"
 POSTED_CONTENT_FILE = "/tmp/posted_content_v4.txt"
 
 # ── ADZUNA COUNTRIES ──────────────────────────────────
@@ -71,8 +71,27 @@ PAPER_SIGNALS = [
 BLACKLIST = [
     "wet lab", "bench scientist", "pipette", "cell culture",
     "histology", "animal model", "phlebotomist", "clinical nurse",
-    "surgery", "radiologist", "dentist", "pharmacy technician"
+    "surgery", "radiologist", "dentist", "pharmacy technician",
+    "social media", "cryptography", "cyber security", "cybersecurity",
+    "marketing", "sales", "accountant", "finance", "legal", "law",
+    "human resources", "HR manager", "recruitment", "teacher",
+    "primary school", "secondary school", "english teacher"
 ]
+
+# Job TITLE must contain at least one of these to be accepted
+REQUIRED_TITLE_WORDS = [
+    "bioinformatics", "bioinformatician", "computational biology",
+    "genomics", "proteomics", "transcriptomics", "metagenomics",
+    "sequencing", "RNA-seq", "single cell", "omics", "NGS",
+    "computational", "genome", "epigenomics", "systems biology",
+    "drug discovery", "cheminformatics", "structural biology",
+    "machine learning", "deep learning", "AI scientist",
+    "data scientist", "research scientist", "postdoc",
+    "bioinformatics engineer", "molecular biology", "cancer genomics"
+]
+
+# Hard limit — max jobs posted per cycle to avoid spam
+MAX_JOBS_PER_CYCLE = 10
 
 # ── JOB RSS FEEDS ─────────────────────────────────────
 # NOTE ON LINKEDIN: LinkedIn blocks all scraping and has no
@@ -331,8 +350,19 @@ def fetch_adzuna_jobs(seen):
                         jid   = f"adzuna_{job.get('id')}"
                         title = job.get('title', '')
                         desc  = job.get('description', '')
-                        if jid in seen or is_blacklisted(title, desc):
+                        if jid in seen:
                             continue
+                        if is_blacklisted(title, desc):
+                            continue
+                        # STRICT: title must contain a bioinformatics keyword
+                        title_lower = title.lower()
+                        if not any(w in title_lower for w in REQUIRED_TITLE_WORDS):
+                            print(f"  ⏭  Skipped (not bio): {title[:50]}")
+                            continue
+                        # Daily limit check
+                        if count >= MAX_JOBS_PER_CYCLE:
+                            print(f"  ✋ Daily limit of {MAX_JOBS_PER_CYCLE} reached.")
+                            return count
                         company  = job.get('company', {}).get('display_name', 'N/A')
                         location = job.get('location', {}).get('display_name', 'N/A')
                         link     = job.get('redirect_url', '#')
@@ -369,6 +399,11 @@ def fetch_rss_jobs(seen):
                 if not is_real_job(title, summary):
                     continue
                 if is_blacklisted(title, summary):
+                    continue
+                # Strict title check for RSS too
+                title_lower = title.lower()
+                if not any(w in title_lower for w in REQUIRED_TITLE_WORDS):
+                    print(f"  ⏭  Skipped RSS (not bio): {title[:50]}")
                     continue
                 send_telegram(format_job_telegram(
                     title, "See link", "See link", link, feed['source']))
