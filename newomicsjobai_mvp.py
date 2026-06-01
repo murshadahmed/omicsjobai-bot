@@ -25,7 +25,7 @@ GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
 # Change v4 to v5 anytime you want a full reset of seen jobs/papers
-POSTED_JOBS_FILE    = "/tmp/posted_jobs_v4.txt"
+POSTED_JOBS_FILE    = "/tmp/posted_jobs_v5.txt"
 POSTED_CONTENT_FILE = "/tmp/posted_content_v4.txt"
 
 # ── ADZUNA COUNTRIES ──────────────────────────────────
@@ -41,19 +41,17 @@ COUNTRIES = [
 ]
 
 # ── JOB SEARCH KEYWORDS ───────────────────────────────
-JOB_KEYWORDS = (
-    "bioinformatics OR computational biology OR genomics OR "
-    "proteomics OR transcriptomics OR metagenomics OR "
-    "bioinformatician OR single cell OR scRNA-seq OR RNA-seq OR "
-    "NGS OR epigenomics OR structural bioinformatics OR "
-    "systems biology OR variant calling OR GWAS OR "
-    "molecular docking OR MD simulation OR drug discovery OR "
-    "cheminformatics OR machine learning biology OR "
-    "deep learning genomics OR AI bioinformatics OR "
-    "computational neuroscience OR multi-omics OR nanopore OR "
-    "spatial transcriptomics OR postdoc bioinformatics OR "
-    "staff scientist bioinformatics OR bioinformatics engineer"
-)
+# Adzuna works best with SHORT keyword searches
+# We run multiple short searches to cover all fields
+ADZUNA_SEARCHES = [
+    "bioinformatics",
+    "computational biology",
+    "genomics scientist",
+    "RNA-seq bioinformatics",
+    "single cell bioinformatics",
+    "drug discovery computational",
+    "machine learning genomics",
+]
 
 JOB_TITLE_WORDS = [
     "scientist", "engineer", "postdoc", "post-doc", "post doc",
@@ -307,57 +305,54 @@ def save_content_to_supabase(title, abstract, url, source, content_type):
 def fetch_adzuna_jobs(seen):
     count = 0
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
-        print("  ⚠️  Adzuna API keys missing — skipping job search")
+        print("  Adzuna API keys missing — skipping")
         return 0
 
     for country in COUNTRIES:
-        print(f"  Checking Adzuna — {country.upper()}...", flush=True)
-        api_url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
-        params = {
-            "app_id": ADZUNA_APP_ID,
-            "app_key": ADZUNA_APP_KEY,
-            "results_per_page": 50,
-            "what": JOB_KEYWORDS,
-            "sort_by": "date",
-            "max_days_old": 7
-        }
-        try:
-            r = requests.get(api_url, params=params, timeout=30)
-            print(f"  Adzuna {country.upper()} status: {r.status_code}", flush=True)
-            if r.status_code == 200:
-                results = r.json().get("results", [])
-                print(f"  Adzuna {country.upper()} found: {len(results)} results", flush=True)
-                for job in results:
-                    jid   = f"adzuna_{job.get('id')}"
-                    title = job.get('title', '')
-                    desc  = job.get('description', '')
-                    if jid in seen or is_blacklisted(title, desc):
-                        continue
-                    company  = job.get('company', {}).get('display_name', 'N/A')
-                    location = job.get('location', {}).get('display_name', 'N/A')
-                    link     = job.get('redirect_url', '#')
-                    send_telegram(format_job_telegram(
-                        title, company, location, link, "Adzuna", country))
-                    save_job_to_supabase(
-                        title, company, location, link, "Adzuna", country)
-                    save_seen(jid, POSTED_JOBS_FILE)
-                    seen.add(jid)
-                    count += 1
-                    time.sleep(2)
-            elif r.status_code == 401:
-                print(f"  ❌ Adzuna AUTH FAILED — check ADZUNA_APP_ID and ADZUNA_APP_KEY in Railway!")
-                break  # No point checking other countries if auth fails
-            else:
-                print(f"  ⚠️  Adzuna {country.upper()}: HTTP {r.status_code} — {r.text[:100]}")
-        except requests.exceptions.Timeout:
-            print(f"  ⚠️  Adzuna {country.upper()}: TIMEOUT after 30s")
-        except requests.exceptions.ConnectionError as e:
-            print(f"  ⚠️  Adzuna {country.upper()}: CONNECTION ERROR — {e}")
-        except Exception as e:
-            print(f"  ⚠️  Adzuna {country.upper()}: {type(e).__name__} — {e}")
-        time.sleep(2)
+        for keyword in ADZUNA_SEARCHES:
+            print(f"  Adzuna {country.upper()} [{keyword}]...", flush=True)
+            try:
+                r = requests.get(
+                    f"https://api.adzuna.com/v1/api/jobs/{country}/search/1",
+                    params={
+                        "app_id": ADZUNA_APP_ID,
+                        "app_key": ADZUNA_APP_KEY,
+                        "results_per_page": 10,
+                        "what": keyword,
+                        "sort_by": "date",
+                        "max_days_old": 3
+                    },
+                    timeout=30
+                )
+                if r.status_code == 200:
+                    results = r.json().get("results", [])
+                    print(f"  Found {len(results)} results", flush=True)
+                    for job in results:
+                        jid   = f"adzuna_{job.get('id')}"
+                        title = job.get('title', '')
+                        desc  = job.get('description', '')
+                        if jid in seen or is_blacklisted(title, desc):
+                            continue
+                        company  = job.get('company', {}).get('display_name', 'N/A')
+                        location = job.get('location', {}).get('display_name', 'N/A')
+                        link     = job.get('redirect_url', '#')
+                        send_telegram(format_job_telegram(
+                            title, company, location, link, "Adzuna", country))
+                        save_job_to_supabase(
+                            title, company, location, link, "Adzuna", country)
+                        save_seen(jid, POSTED_JOBS_FILE)
+                        seen.add(jid)
+                        count += 1
+                        time.sleep(2)
+                elif r.status_code == 401:
+                    print("  Adzuna AUTH FAILED — check keys in Railway!")
+                    return count
+                else:
+                    print(f"  Adzuna {country.upper()}: HTTP {r.status_code}")
+            except Exception as e:
+                print(f"  Adzuna error: {e}")
+            time.sleep(1)
     return count
-
 def fetch_rss_jobs(seen):
     count = 0
     for feed in JOB_RSS_FEEDS:
